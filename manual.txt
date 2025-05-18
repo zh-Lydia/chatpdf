@@ -1,0 +1,2 @@
+set PATH=C:\Program Files\Git\cmd;%PATH%       
+ 手工添加git
