@@ -1523,6 +1523,7 @@ with gr.Blocks(
         opacity: 0.8;
         font-size: 13px;
         margin-top: 12px;
+        text-align: left !important; /* ✅ 强制左对齐，添加!important提高优先级 */
     }
 
     /* 加载和进度样式 */
@@ -1692,10 +1693,10 @@ with gr.Blocks(
                             
                             # 添加模型选择下拉框
                             model_choice = gr.Dropdown(
-                                choices=["ollama", "siliconflow"],
+                                choices=["ollama"],
                                 value="ollama",
                                 label="模型选择",
-                                info="选择使用本地模型或云端模型"
+                                info="选择使用本地模型"
                             )
                             
                         with gr.Row():
@@ -1727,7 +1728,7 @@ with gr.Blocks(
                     
                     status_display = gr.HTML("", elem_id="status-display")
                     gr.Markdown("""
-                    <div class="footer-note">
+                    <div class="footer-note" style="text-align: left !important; float: left; width: 100%;">
                         *回答生成可能需要1-2分钟，请耐心等待<br>
                         *支持多轮对话，可基于前文继续提问
                     </div>
@@ -1773,7 +1774,7 @@ with gr.Blocks(
                 )
                 
             gr.Markdown("""
-            <div class="footer-note">
+            <div class="footer-note" style="text-align: left !important; float: left; width: 100%;">
                 * 点击表格中的行可查看该分块的完整内容<br>
                 * 分词数表示使用jieba分词后的token数量
             </div>
