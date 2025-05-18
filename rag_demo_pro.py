@@ -1,4 +1,3 @@
-
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 # 以上两行添加的Hugging Face镜像设置，是为了解决没有科学上网环境下载向量模型的问题
@@ -97,6 +96,9 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
     Returns:
         包含所有检索内容的列表
     """
+    # 导入查询处理器
+    from query_processing import QueryProcessor, IntentType
+    
     query = initial_query
     all_contexts = []
     all_doc_ids = []  # 使用原始ID
@@ -104,8 +106,50 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
     
     global faiss_index, faiss_contents_map, faiss_metadatas_map, faiss_id_order_for_index
     
+    # 对初始查询进行意图识别
+    query_processor = QueryProcessor()
+    query_result = query_processor.process_query(initial_query)
+    
+    # 输出查询处理结果
+    print("\n" + "="*50)
+    print("【查询处理】")
+    print(f"原始查询: {query_result['original_query']}")
+    print(f"意图类型: {query_result['intent']} (置信度: {query_result['confidence']:.2f})")
+    print(f"需要检索: {'是' if query_result['needs_retrieval'] else '否'}")
+    
+    # 如果有查询改写，显示改写结果
+    if query_result['rewritten_queries'] and len(query_result['rewritten_queries']) > 0:
+        print("\n【查询改写】")
+        for j, variant in enumerate(query_result['rewritten_queries'], 1):
+            print(f"  改写 {j}: {variant}")
+    print("="*50)
+    
+    # 如果是实体类查询，直接返回空结果，不进行检索
+    if not query_result['needs_retrieval']:
+        print("实体类查询，跳过检索过程")
+        return [], [], []
+    
+    # 记录当前查询，用于检测查询变化
+    current_query = initial_query
+    
     for i in range(max_iterations):
         logging.info(f"递归检索迭代 {i+1}/{max_iterations}，当前查询: {query}")
+        
+        # 如果查询变化了，再次进行查询处理
+        if query != current_query:
+            current_query = query
+            query_result = query_processor.process_query(query)
+            print("\n" + "-"*30)
+            print("【新一轮查询】")
+            print(f"当前查询: {query_result['original_query']}")
+            print(f"意图类型: {query_result['intent']} (置信度: {query_result['confidence']:.2f})")
+            
+            # 如果有查询改写，显示改写结果
+            if query_result['rewritten_queries'] and len(query_result['rewritten_queries']) > 0:
+                print("查询改写:")
+                for j, variant in enumerate(query_result['rewritten_queries'][:2], 1):  # 只显示前两个
+                    print(f"  - {variant}")
+            print("-"*30)
         
         web_results_texts = [] # Store text from web results for context building
         if enable_web_search and check_serpapi_key():
@@ -145,6 +189,11 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
         
         bm25_results = BM25_MANAGER.search(query, top_k=10) # BM25_MANAGER.search returns list of dicts
         
+        # 输出检索信息
+        print(f"\n【检索结果】")
+        print(f"- 向量检索: {len(semantic_results_docs)}个结果")
+        print(f"- BM25检索: {len(bm25_results)}个结果")
+        
         # Adapt hybrid_merge to work with current data structures
         # It expects semantic_results in a specific format if we pass it directly
         # For now, prepare a structure similar to old semantic_results for hybrid_merge
@@ -154,7 +203,15 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
             "metadatas": [semantic_results_metadatas]
         }
 
-        hybrid_results = hybrid_merge(prepared_semantic_results_for_hybrid, bm25_results, alpha=0.7)
+        # 明确显示使用的融合方法和参数
+        print("\n【融合策略】")
+        print(f"- 线性融合: 向量检索 × 0.7 + BM25 × 0.3")
+        print(f"- RRF融合: k=60")
+        
+        hybrid_results = hybrid_merge(prepared_semantic_results_for_hybrid, bm25_results, alpha=0.7, use_rrf=True, k=60)
+        
+        # 输出融合后的结果数量
+        print(f"- 混合检索: {len(hybrid_results)}个结果")
         
         doc_ids_current_iter = []
         docs_current_iter = []
@@ -188,6 +245,8 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
             current_contexts_for_llm.append(doc) # Add reranked local docs for LLM context
         
         if i == max_iterations - 1:
+            print("-"*50)
+            print(f"达到最大迭代次数 ({max_iterations})，结束递归检索")
             break
             
         if current_contexts_for_llm: # Use combined web and local context for deciding next query
@@ -233,17 +292,23 @@ def recursive_retrieval(initial_query, max_iterations=3, enable_web_search=False
                     next_query = response.json().get("response", "").strip()
                 
                 if "不需要" in next_query or "不需要进一步查询" in next_query or len(next_query) < 5:
+                    print("-"*50)
+                    print("LLM判断已有充分信息，不需要进一步查询")
                     logging.info("LLM判断不需要进一步查询，结束递归检索")
                     break
                     
                 # 使用新查询继续迭代
                 query = next_query
+                print("-"*50)
+                print(f"【递归检索】生成新查询: {query}")
                 logging.info(f"生成新查询: {query}")
             except Exception as e:
                 logging.error(f"生成新查询时出错: {str(e)}")
                 break
         else:
             # 如果当前迭代没有检索到内容，结束迭代
+            print("-"*50)
+            print("未检索到相关内容，结束递归检索")
             break
     
     return all_contexts, all_doc_ids, all_metadata
@@ -1163,7 +1228,7 @@ def call_siliconflow_api(prompt, temperature=0.7, max_tokens=1024):
         logging.error(f"调用SiliconFlow API时发生未知错误: {str(e)}")
         return f"发生未知错误: {str(e)}"
 
-def hybrid_merge(semantic_results, bm25_results, alpha=0.7):
+def hybrid_merge(semantic_results, bm25_results, alpha=0.7, use_rrf=True, k=60):
     """
     合并语义搜索和BM25搜索结果
     
@@ -1171,12 +1236,18 @@ def hybrid_merge(semantic_results, bm25_results, alpha=0.7):
         semantic_results: 向量检索结果 (字典格式，包含ids, documents, metadatas)
         bm25_results: BM25检索结果 (字典列表，包含id, score, content)
         alpha: 语义搜索权重 (0-1)
+        use_rrf: 是否使用RRF（基于排名融合）算法进行后处理
+        k: RRF算法的常数因子，用于控制排名差异的重要性
         
     返回:
         合并后的结果列表 [(doc_id, {'score': score, 'content': content, 'metadata': metadata}), ...]
     """
     merged_dict = {}
     global faiss_metadatas_map # Ensure we can access the global map
+    
+    # 保存原始排名信息，用于RRF
+    semantic_ranks = {}
+    bm25_ranks = {}
     
     # 处理语义搜索结果
     if (semantic_results and 
@@ -1198,22 +1269,37 @@ def hybrid_merge(semantic_results, bm25_results, alpha=0.7):
                 'content': doc,
                 'metadata': meta
             }
+            # 保存语义搜索排名（从0开始）
+            semantic_ranks[doc_id] = i
     else:
         logging.warning("Semantic results are missing, have an unexpected format, or are empty. Skipping semantic part in hybrid merge.")
     
     # 处理BM25结果
     if not bm25_results:
-        return sorted(merged_dict.items(), key=lambda x: x[1]['score'], reverse=True)
+        # 如果不需要RRF，直接返回线性融合结果
+        if not use_rrf:
+            return sorted(merged_dict.items(), key=lambda x: x[1]['score'], reverse=True)
+        # 否则对单一来源进行RRF处理
+        else:
+            # 对线性融合结果进行排序
+            sorted_results = sorted(merged_dict.items(), key=lambda x: x[1]['score'], reverse=True)
+            # 应用RRF（在这种情况下，只有一个排名来源，但仍然可以进行处理）
+            return apply_rrf_fusion(sorted_results, {doc_id: idx for idx, (doc_id, _) in enumerate(sorted_results)}, {}, k)
         
     valid_bm25_scores = [r['score'] for r in bm25_results if isinstance(r, dict) and 'score' in r]
     max_bm25_score = max(valid_bm25_scores) if valid_bm25_scores else 1.0
     
-    for result in bm25_results:
+    # 保存BM25排名
+    for i, result in enumerate(bm25_results):
         if not (isinstance(result, dict) and 'id' in result and 'score' in result and 'content' in result):
             logging.warning(f"Skipping invalid BM25 result item: {result}")
             continue
             
         doc_id = result['id']
+        # 保存BM25排名（从0开始）
+        bm25_ranks[doc_id] = i
+        
+        # 下面是现有的线性融合逻辑
         # Normalize BM25 score
         normalized_score = result['score'] / max_bm25_score if max_bm25_score > 0 else 0
         
@@ -1227,8 +1313,68 @@ def hybrid_merge(semantic_results, bm25_results, alpha=0.7):
                 'metadata': metadata
             }
     
+    # 线性融合结果
     merged_results = sorted(merged_dict.items(), key=lambda x: x[1]['score'], reverse=True)
-    return merged_results
+    
+    # 如果不使用RRF，直接返回线性融合结果
+    if not use_rrf:
+        return merged_results
+    
+    # 应用RRF融合
+    return apply_rrf_fusion(merged_results, semantic_ranks, bm25_ranks, k)
+
+def apply_rrf_fusion(sorted_results, semantic_ranks, bm25_ranks, k=60):
+    """
+    应用RRF（Reciprocal Rank Fusion）算法进行结果融合
+    
+    参数:
+        sorted_results: 已排序的结果列表 [(doc_id, {'score': score, ...}), ...]
+        semantic_ranks: 语义搜索的文档排名字典 {doc_id: rank, ...}
+        bm25_ranks: BM25的文档排名字典 {doc_id: rank, ...}
+        k: RRF算法的常数因子
+        
+    返回:
+        RRF融合后的结果列表
+    """
+    # 创建结果字典，保存所有文档
+    results_dict = {doc_id: data for doc_id, data in sorted_results}
+    
+    # 计算RRF得分
+    rrf_scores = {}
+    for doc_id in results_dict:
+        # 初始化RRF得分
+        rrf_score = 0
+        
+        # 如果文档在语义搜索结果中，计算其贡献
+        if doc_id in semantic_ranks:
+            rank = semantic_ranks[doc_id] + 1  # RRF使用从1开始的排名
+            rrf_score += 1.0 / (k + rank)
+            
+        # 如果文档在BM25结果中，计算其贡献
+        if doc_id in bm25_ranks:
+            rank = bm25_ranks[doc_id] + 1  # RRF使用从1开始的排名
+            rrf_score += 1.0 / (k + rank)
+            
+        # 保存RRF得分
+        rrf_scores[doc_id] = rrf_score
+    
+    # 综合RRF得分和原始线性融合得分
+    for doc_id, data in results_dict.items():
+        # 原始的线性融合得分保留在results_dict[doc_id]['score']中
+        # 同时添加RRF得分，这样最终结果会同时考虑两者
+        data['rrf_score'] = rrf_scores.get(doc_id, 0)
+        # 综合得分：原始线性融合得分 * 0.5 + RRF得分 * 0.5
+        data['combined_score'] = data['score'] * 0.5 + data['rrf_score'] * 0.5
+    
+    # 根据综合得分重新排序
+    final_results = sorted(results_dict.items(), key=lambda x: x[1]['combined_score'], reverse=True)
+    
+    # 构建返回结果，保持原有格式
+    return [(doc_id, {
+        'score': data['combined_score'],  # 使用综合得分
+        'content': data['content'],
+        'metadata': data['metadata']
+    }) for doc_id, data in final_results]
 
 # 新增：更新本地文档的BM25索引
 def update_bm25_index():
@@ -1269,7 +1415,7 @@ def get_system_models_info():
     models_info = {
         "嵌入模型": "all-MiniLM-L6-v2",
         "分块方法": "RecursiveCharacterTextSplitter (chunk_size=800, overlap=150)",
-        "检索方法": "向量检索 + BM25混合检索 (α=0.7)",
+        "检索方法": "向量检索 + BM25混合检索 (线性融合α=0.7) + RRF排名融合",
         "重排序模型": "交叉编码器 (sentence-transformers/distiluse-base-multilingual-cased-v2)",
         "生成模型": "deepseek-r1 (7B/1.5B)",
         "分词工具": "jieba (中文分词)"

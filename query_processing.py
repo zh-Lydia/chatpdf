@@ -207,8 +207,20 @@ class QueryProcessor:
             logger.error(f"调用模型API失败: {str(e)}")
             raise
 
-# 使用示例
+# 如果直接运行该文件，将执行下面的代码
 if __name__ == "__main__":
+    # 禁用默认的日志配置
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        
+    # 配置控制台日志输出（只显示INFO级别消息，不显示时间戳和logger名称）
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(console_handler)
+    logger.setLevel(logging.INFO)
+    
     processor = QueryProcessor()
     
     # 测试不同类型的查询
@@ -221,14 +233,28 @@ if __name__ == "__main__":
         "谁发明了电灯泡",  # 实体类
     ]
     
-    for query in test_queries:
+    print("\n" + "=" * 60)
+    print("【查询处理与意图识别测试】")
+    print("=" * 60)
+    
+    for i, query in enumerate(test_queries, 1):
+        # 处理查询，不输出中间日志
+        logging.disable(logging.INFO)
         result = processor.process_query(query)
-        print("\n" + "="*50)
-        print(f"原始查询: {result['original_query']}")
-        print(f"意图类型: {result['intent']} (置信度: {result['confidence']:.2f})")
-        print(f"需要检索: {'是' if result['needs_retrieval'] else '否'}")
+        logging.disable(logging.NOTSET)
         
-        if result['needs_retrieval'] and result['rewritten_queries']:
-            print("改写变体:")
-            for i, variant in enumerate(result['rewritten_queries']):
-                print(f"  {i+1}. {variant}") 
+        # 输出查询处理结果
+        print(f"\n【查询 {i}】: {result['original_query']}")
+        print(f"├─ 意图类型: {result['intent']}")
+        print(f"├─ 置信度: {result['confidence']:.2f}")
+        print(f"└─ 需要检索: {'是' if result['needs_retrieval'] else '否'}")
+        
+        # 如果有查询改写，显示改写结果
+        if result['rewritten_queries'] and len(result['rewritten_queries']) > 1:  # 排除原始查询
+            print("\n   【查询改写结果】")
+            for j, variant in enumerate(result['rewritten_queries'][1:], 1):  # 跳过第一个(原始查询)
+                print(f"   {j}. {variant}")
+    
+    print("\n" + "=" * 60)
+    print("【测试完成】")
+    print("=" * 60) 
